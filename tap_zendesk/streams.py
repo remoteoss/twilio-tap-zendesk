@@ -458,7 +458,6 @@ class SatisfactionRatings(Stream):
             parsed_end = singer.strftime(end, "%Y-%m-%dT%H:%M:%SZ")
 
             LOGGER.info("Querying for satisfaction ratings between %s and %s", parsed_start, min(parsed_end, parsed_sync_end))
-            LOGGER.info("Querying for satisfaction ratings between %s and %s", epoch_start, min(epoch_end, epoch_sync_end))
             satisfaction_ratings = self.client.satisfaction_ratings(start_time=epoch_start,
                                                                     end_time=min(epoch_end, epoch_sync_end))
             # NB: We've observed that the tap can sync 50k records in ~15
