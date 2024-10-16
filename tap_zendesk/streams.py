@@ -1,7 +1,7 @@
 import os
 import json
 import datetime
-import time
+import math
 import pytz
 import zenpy
 from zenpy.lib.exception import RecordNotFoundException
@@ -331,44 +331,45 @@ class Tickets(Stream):
             )  # NB: Fields is a duplicate of custom_fields, remove before emitting
             should_yield = self._buffer_record((self.stream, ticket_dict))
 
-            if audits_stream.is_selected():
-                try:
-                    for audit in audits_stream.sync(ticket_dict["id"]):
-                        zendesk_metrics.capture("ticket_audit")
-                        self._buffer_record(audit)
-                except RecordNotFoundException:
-                    LOGGER.warning(
-                        "Unable to retrieve audits for ticket (ID: %s), "
-                        "the Zendesk API returned a RecordNotFound error",
-                        ticket_dict["id"],
-                    )
+            # Only request below if ticket status is not 'deleted' or skip_deleted is False (default is True)
+            # Note, the status = deleted flag is only valid for the /incremental/tickets endpoint, not /tickets
+            skip_deleted = self.config.get('skip_deleted', True)
 
-            if metrics_stream.is_selected():
-                try:
-                    for metric in metrics_stream.sync(ticket_dict["id"]):
-                        zendesk_metrics.capture("ticket_metric")
-                        self._buffer_record(metric)
-                except RecordNotFoundException:
-                    LOGGER.warning(
-                        "Unable to retrieve metrics for ticket (ID: %s), "
-                        "the Zendesk API returned a RecordNotFound error",
-                        ticket_dict["id"],
-                    )
+            if not skip_deleted or ticket_dict["status"] != 'deleted':
+                if audits_stream.is_selected():
+                    try:
+                        for audit in audits_stream.sync(ticket_dict["id"]):
+                            zendesk_metrics.capture('ticket_audit')
+                            self._buffer_record(audit)
+                    except RecordNotFoundException:
+                        LOGGER.warning("Unable to retrieve audits for ticket (ID: %s), " \
+                        "the Zendesk API returned a RecordNotFound error", ticket_dict["id"])
 
-            if comments_stream.is_selected():
-                try:
-                    # add ticket_id to ticket_comment so the comment can
-                    # be linked back to it's corresponding ticket
-                    for comment in comments_stream.sync(ticket_dict["id"]):
-                        zendesk_metrics.capture("ticket_comment")
-                        comment[1].ticket_id = ticket_dict["id"]
-                        self._buffer_record(comment)
-                except RecordNotFoundException:
-                    LOGGER.warning(
-                        "Unable to retrieve comments for ticket (ID: %s), "
-                        "the Zendesk API returned a RecordNotFound error",
-                        ticket_dict["id"],
-                    )
+                if metrics_stream.is_selected():
+                    try:
+                        for metric in metrics_stream.sync(ticket_dict["id"]):
+                            zendesk_metrics.capture('ticket_metric')
+                            self._buffer_record(metric)
+                    except RecordNotFoundException:
+                        LOGGER.warning("Unable to retrieve metrics for ticket (ID: %s), " \
+                        "the Zendesk API returned a RecordNotFound error", ticket_dict["id"])
+
+                if comments_stream.is_selected():
+                    try:
+                        # add ticket_id to ticket_comment so the comment can
+                        # be linked back to it's corresponding ticket
+                        for comment in comments_stream.sync(ticket_dict["id"]):
+                            zendesk_metrics.capture('ticket_comment')
+                            comment[1].ticket_id = ticket_dict["id"]
+                            self._buffer_record(comment)
+                    except RecordNotFoundException:
+                        LOGGER.warning("Unable to retrieve comments for ticket (ID: %s), " \
+                        "the Zendesk API returned a RecordNotFound error", ticket_dict["id"])
+
+            else:
+                LOGGER.info("Not attempting to retrieve audits, metrics or comments for ticket (ID: %s) as "
+                            "ticket status is %s", ticket_dict["id"], ticket_dict["status"])
+
 
             if should_yield:
                 for rec in self._empty_buffer():
@@ -447,23 +448,18 @@ class SatisfactionRatings(Stream):
             ).replace(tzinfo=pytz.UTC)
         else:
             sync_end = singer.utils.now() - datetime.timedelta(minutes=1)
-        epoch_sync_end = int(sync_end.strftime("%s"))
+        epoch_sync_end = math.floor(sync_end.timestamp())
         parsed_sync_end = singer.strftime(sync_end, "%Y-%m-%dT%H:%M:%SZ")
 
         while start < sync_end:
-            epoch_start = int(start.strftime("%s"))
+            epoch_start = math.floor(start.timestamp())
             parsed_start = singer.strftime(start, "%Y-%m-%dT%H:%M:%SZ")
-            epoch_end = int(end.strftime("%s"))
+            epoch_end = math.floor(end.timestamp())
             parsed_end = singer.strftime(end, "%Y-%m-%dT%H:%M:%SZ")
 
-            LOGGER.info(
-                "Querying for satisfaction ratings between %s and %s",
-                parsed_start,
-                min(parsed_end, parsed_sync_end),
-            )
-            satisfaction_ratings = self.client.satisfaction_ratings(
-                start_time=epoch_start, end_time=min(epoch_end, epoch_sync_end)
-            )
+            LOGGER.info("Querying for satisfaction ratings between %s and %s", parsed_start, min(parsed_end, parsed_sync_end))
+            satisfaction_ratings = self.client.satisfaction_ratings(start_time=epoch_start,
+                                                                    end_time=min(epoch_end, epoch_sync_end))
             # NB: We've observed that the tap can sync 50k records in ~15
             # minutes, due to this, the tap will adjust the time range
             # dynamically to ensure bookmarks are able to be written in
